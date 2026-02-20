@@ -1,43 +1,92 @@
-const WebSocket = require("ws");
+import { WebSocketServer } from "ws";
 
-const wss = new WebSocket.Server({ port: process.env.PORT || 10000 });
+const PORT = process.env.PORT || 10000;
 
-const rooms = {};
+const wss = new WebSocketServer({ port: PORT });
+
+const rooms = {}; // roomName -> { clients: [{ws, username}], hostWs, djs:Set(ws) }
 
 wss.on("connection", (ws) => {
+  let currentRoom = null;
+  let username = null;
+
   ws.on("message", (message) => {
     const data = JSON.parse(message);
 
+    // JOIN
     if (data.type === "join") {
-      const { room, username } = data;
+      currentRoom = data.room;
+      username = data.username;
 
-      if (!rooms[room]) {
-        rooms[room] = [];
+      if (!rooms[currentRoom]) {
+        rooms[currentRoom] = {
+          clients: [],
+          hostWs: null,
+          djs: new Set(),
+          state: null
+        };
       }
 
-      const isHost = rooms[room].length === 0;
+      const roomObj = rooms[currentRoom];
+      roomObj.clients.push({ ws, username });
 
-      const user = { username, isHost, ws };
-      rooms[room].push(user);
+      // ilk giren host
+      if (!roomObj.hostWs) roomObj.hostWs = ws;
 
-      broadcastRoom(room);
+      broadcastRoomData(currentRoom);
+      return;
     }
+
+    // DJ yetkisi değişikliği (ileride eklenecek)
+    if (data.type === "setDj" && currentRoom && rooms[currentRoom]) {
+      const roomObj = rooms[currentRoom];
+      if (ws !== roomObj.hostWs) return; // sadece host
+
+      const targetName = data.username;
+      const target = roomObj.clients.find(c => c.username === targetName);
+      if (!target) return;
+
+      if (data.enabled) roomObj.djs.add(target.ws);
+      else roomObj.djs.delete(target.ws);
+
+      broadcastRoomData(currentRoom);
+      return;
+    }
+
+    // (Sync update mesajlarını sonra ekleyeceğiz)
   });
 
   ws.on("close", () => {
-    for (const room in rooms) {
-      rooms[room] = rooms[room].filter(user => user.ws !== ws);
-      broadcastRoom(room);
+    // kullanıcıyı odalardan temizle
+    for (const roomName of Object.keys(rooms)) {
+      const roomObj = rooms[roomName];
+
+      roomObj.clients = roomObj.clients.filter(c => c.ws !== ws);
+      roomObj.djs.delete(ws);
+
+      // host çıktıysa yeni host seç
+      if (roomObj.hostWs === ws) {
+        roomObj.hostWs = roomObj.clients[0]?.ws || null;
+      }
+
+      // oda boşsa sil
+      if (roomObj.clients.length === 0) {
+        delete rooms[roomName];
+      } else {
+        broadcastRoomData(roomName);
+      }
     }
   });
 });
 
-function broadcastRoom(room) {
-  if (!rooms[room]) return;
+function broadcastRoomData(roomName) {
+  const roomObj = rooms[roomName];
+  if (!roomObj) return;
 
-  const users = rooms[room].map(user => ({
-    username: user.username,
-    isHost: user.isHost
+  const users = roomObj.clients.map(c => ({
+    username: c.username,
+    isHost: c.ws === roomObj.hostWs,
+    isDj: roomObj.djs.has(c.ws)
   }));
 
   const payload = JSON.stringify({
@@ -45,7 +94,7 @@ function broadcastRoom(room) {
     users
   });
 
-  rooms[room].forEach(user => {
-    user.ws.send(payload);
-  });
+  roomObj.clients.forEach(c => c.ws.send(payload));
 }
+
+console.log("BozoJam server running on port", PORT);
