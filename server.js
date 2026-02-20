@@ -1,82 +1,51 @@
-import { WebSocketServer } from "ws";
+const WebSocket = require("ws");
 
-const PORT = process.env.PORT || 3000;
-
-const wss = new WebSocketServer({ port: PORT });
+const wss = new WebSocket.Server({ port: process.env.PORT || 10000 });
 
 const rooms = {};
 
 wss.on("connection", (ws) => {
-  let currentRoom = null;
-  let username = null;
-
   ws.on("message", (message) => {
     const data = JSON.parse(message);
 
-    // Odaya katılma
     if (data.type === "join") {
-      currentRoom = data.room;
-      username = data.username;
+      const { room, username } = data;
 
-      if (!rooms[currentRoom]) {
-        rooms[currentRoom] = {
-          clients: [],
-          state: null
-        };
+      if (!rooms[room]) {
+        rooms[room] = [];
       }
 
-      rooms[currentRoom].clients.push({ ws, username });
+      const isHost = rooms[room].length === 0;
 
-      broadcastRoomInfo(currentRoom);
+      const user = { username, isHost, ws };
+      rooms[room].push(user);
 
-      // Yeni gelen varsa mevcut state'i yolla
-      if (rooms[currentRoom].state) {
-        ws.send(JSON.stringify({
-          type: "sync",
-          state: rooms[currentRoom].state
-        }));
-      }
-
-      return;
-    }
-
-    if (!rooms[currentRoom]) return;
-
-    // State güncelleme
-    if (data.type === "update") {
-      rooms[currentRoom].state = data.state;
-
-      rooms[currentRoom].clients.forEach(client => {
-        if (client.ws !== ws) {
-          client.ws.send(JSON.stringify({
-            type: "sync",
-            state: data.state
-          }));
-        }
-      });
+      broadcastRoom(room);
     }
   });
 
   ws.on("close", () => {
-    if (!currentRoom || !rooms[currentRoom]) return;
-
-    rooms[currentRoom].clients =
-      rooms[currentRoom].clients.filter(c => c.ws !== ws);
-
-    broadcastRoomInfo(currentRoom);
+    for (const room in rooms) {
+      rooms[room] = rooms[room].filter(user => user.ws !== ws);
+      broadcastRoom(room);
+    }
   });
 });
 
-function broadcastRoomInfo(room) {
-  const roomData = rooms[room];
-  const count = roomData.clients.length;
+function broadcastRoom(room) {
+  if (!rooms[room]) return;
 
-  roomData.clients.forEach(client => {
-    client.ws.send(JSON.stringify({
-      type: "roomInfo",
-      userCount: count
-    }));
+  const users = rooms[room].map(user => ({
+    username: user.username,
+    isHost: user.isHost
+  }));
+
+  const payload = JSON.stringify({
+    type: "roomData",
+    users
+  });
+
+  rooms[room].forEach(user => {
+    user.ws.send(payload);
   });
 }
-
-console.log("BozoJam server running on port", PORT);
